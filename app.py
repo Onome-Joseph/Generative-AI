@@ -1,21 +1,12 @@
 import os
-import requests
+import json
+import time
+import uuid
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-
-# LangChain imports for newer versions
-from langchain_groq import ChatGroq
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import LLMChain
-from langchain.prompts import (
-    ChatPromptTemplate,
-    MessagesPlaceholder,
-    HumanMessagePromptTemplate,
-    SystemMessagePromptTemplate
-)
-import uuid
-import time
+import requests
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -32,144 +23,197 @@ CORS(app, resources={
 # Store user sessions
 user_sessions = {}
 
-class TextToSpeechProcessor:
-    def __init__(self, target_language="English"):
+class SimpleAITutor:
+    """Simplified AI tutor without LangChain dependencies"""
+    
+    def __init__(self, language="English", proficiency="beginner"):
+        self.groq_api_key = os.getenv('GROQ_API_KEY')
+        self.language = language
+        self.proficiency = proficiency
+        
+        # Simple conversation memory (store last 5 exchanges)
+        self.memory = []
+        
+        if not self.groq_api_key:
+            raise ValueError("GROQ_API_KEY not found in environment variables")
+    
+    def get_system_prompt(self):
+        """Generate system prompt based on language and proficiency"""
+        prompt = f"""You are Lingo AI, a friendly AI language tutor for {self.language} at {self.proficiency} level.
+
+Your role:
+1. Help users learn {self.language}
+2. Correct grammar and vocabulary errors gently
+3. Provide explanations for language rules
+4. Have natural conversations
+5. Adapt to the user's proficiency level ({self.proficiency})
+
+Guidelines:
+- Keep responses concise (max 3-4 sentences)
+- Use simple language for beginners, more complex for advanced
+- Always provide translations when introducing new words
+- Give examples to illustrate points
+- Be encouraging and positive
+
+Current conversation context: {self.get_memory_context()}"""
+        return prompt
+    
+    def get_memory_context(self):
+        """Get recent conversation context"""
+        if not self.memory:
+            return "This is the start of the conversation."
+        
+        context = ""
+        for i, exchange in enumerate(self.memory[-3:]):  # Last 3 exchanges
+            context += f"\nUser: {exchange.get('user', '')}"
+            context += f"\nAI: {exchange.get('ai', '')}"
+        return context
+    
+    def add_to_memory(self, user_message, ai_response):
+        """Store conversation in memory"""
+        self.memory.append({
+            'user': user_message,
+            'ai': ai_response
+        })
+        # Keep only last 10 exchanges
+        if len(self.memory) > 10:
+            self.memory = self.memory[-10:]
+    
+    def clear_memory(self):
+        """Clear conversation memory"""
+        self.memory = []
+    
+    def get_response(self, user_message):
+        """Get AI response using Groq API directly"""
+        try:
+            # Import Groq here to avoid issues
+            from groq import Groq
+            
+            client = Groq(api_key=self.groq_api_key)
+            
+            # Prepare messages
+            messages = [
+                {
+                    "role": "system",
+                    "content": self.get_system_prompt()
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ]
+            
+            # Call Groq API
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=300,
+                top_p=1,
+                stream=False,
+                stop=None,
+            )
+            
+            # Extract response
+            ai_response = completion.choices[0].message.content
+            
+            # Store in memory
+            self.add_to_memory(user_message, ai_response)
+            
+            return ai_response.strip()
+            
+        except Exception as e:
+            print(f"Error calling Groq API: {e}")
+            return f"I'm having trouble responding. Please try again. (Error: {str(e)})"
+
+class SimpleTTS:
+    """Simplified Text-to-Speech using Deepgram"""
+    
+    def __init__(self, language="English"):
         self.api_key = os.getenv("DEEPGRAM_API_KEY")
+        self.language = language
+        
         if not self.api_key:
-            raise ValueError("DEEPGRAM_API_KEY not found in environment variables")
+            print("Warning: DEEPGRAM_API_KEY not set. TTS will be disabled.")
+    
+    def text_to_speech(self, text):
+        """Convert text to speech"""
+        if not self.api_key or not text.strip():
+            return None
         
-        self.target_language = target_language
-        self.model = self._select_best_model(target_language)
-        
-    def _select_best_model(self, language):
-        """Select the best Deepgram model based on language"""
-        language_models = {
+        # Select model based on language
+        models = {
             "English": "aura-asteria-en",
             "Spanish": "aura-2-estrella-es",
+            "French": "aura-athena-fr",
+            "German": "aura-orion-de"
         }
-        return language_models.get(language, "aura-asteria-en")
-
-    def text_to_speech(self, text: str):
-        """Convert text to speech and return audio data"""
-        if not text or not text.strip():
-            return None
-            
-        # Clean text for TTS
-        clean_text = self._clean_text_for_speech(text)
-        if not clean_text:
-            return None
-            
-        url = f"https://api.deepgram.com/v1/speak?model={self.model}&encoding=linear16&sample_rate=24000"
+        
+        model = models.get(self.language, "aura-asteria-en")
+        
+        url = f"https://api.deepgram.com/v1/speak?model={model}"
         headers = {
             "Authorization": f"Token {self.api_key}",
             "Content-Type": "application/json",
         }
+        
+        # Clean text for TTS
+        clean_text = self.clean_text(text)
+        
         payload = {"text": clean_text}
-
+        
         try:
             response = requests.post(url, headers=headers, json=payload)
             if response.status_code == 200:
-                return response.content
+                return base64.b64encode(response.content).decode('utf-8')
             else:
                 print(f"TTS Error {response.status_code}: {response.text}")
                 return None
         except Exception as e:
             print(f"TTS Error: {e}")
             return None
-
-    def _clean_text_for_speech(self, text):
-        """Clean text for better TTS output"""
+    
+    def clean_text(self, text):
+        """Clean text for TTS"""
         import re
-        clean_text = re.sub(r'\[Correction:[^\]]*\]', '', text)
-        clean_text = re.sub(r'\*.*?\*', '', text)
-        clean_text = re.sub(r'_.*?_', '', text)
+        
+        # Remove markdown-like formatting
+        clean_text = re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', text)  # Bold/Italic
+        clean_text = re.sub(r'_{1,2}(.*?)_{1,2}', r'\1', clean_text)  # Underline
+        clean_text = re.sub(r'\[.*?\]\(.*?\)', '', clean_text)  # Links
+        clean_text = re.sub(r'`.*?`', '', clean_text)  # Code
+        
+        # Remove excessive whitespace
         clean_text = ' '.join(clean_text.split())
         
+        # Limit length
         if len(clean_text) > 500:
-            clean_text = clean_text[:500] + "..."
-            
+            clean_text = clean_text[:497] + "..."
+        
         return clean_text.strip()
-
-class LanguageModelProcessor:
-    def __init__(self, target_language="English", proficiency_level="beginner"):
-        groq_api_key = os.getenv('GROQ_API_KEY')
-        
-        if not groq_api_key:
-            raise ValueError("GROQ_API_KEY not found in environment variables")
-        
-        self.llm = ChatGroq(
-            temperature=0.7,
-            model_name="llama-3.1-8b-instant", 
-            groq_api_key=groq_api_key,
-            max_tokens=150
-        )
-
-        self.memory = ConversationBufferWindowMemory(
-            memory_key="chat_history", 
-            return_messages=True,
-            k=6
-        )
-        
-        self.target_language = target_language
-        self.proficiency_level = proficiency_level
-
-        # Load bot prompt
-        try:
-            with open('Bot_prompt_2.txt', 'r') as file:
-                bot_prompt_template = file.read().strip()
-        except FileNotFoundError:
-            # Fallback prompt
-            bot_prompt_template = """You are Lingo AI, a friendly AI language tutor for {target_language} at {proficiency_level} level. 
-            Correct errors gently and have natural conversations."""
-            
-        self.bot_prompt = bot_prompt_template.format(
-            target_language=target_language,
-            proficiency_level=proficiency_level
-        )
-
-        # Create prompt template
-        self.prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(self.bot_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
-            HumanMessagePromptTemplate.from_template("{text}")
-        ])
-
-        self.conversation = LLMChain(
-            llm=self.llm,
-            prompt=self.prompt,
-            memory=self.memory,
-            verbose=False
-        )
-
-    def process(self, text):
-        try:
-            start_time = time.time()
-            response = self.conversation.predict(text=text)
-            processing_time = time.time() - start_time
-            
-            if not response or not response.strip():
-                return "I'd love to help you practice! Could you try rephrasing that?"
-                
-            return response.strip()
-        except Exception as e:
-            print(f"Error in process method: {e}")
-            return "I'm having trouble responding right now. Please try again."
-
-    def reset_conversation(self):
-        """Reset the conversation memory"""
-        self.memory.clear()
 
 def get_or_create_session(session_id, language="English", proficiency="beginner"):
     """Get existing session or create new one"""
     if session_id not in user_sessions:
         user_sessions[session_id] = {
-            'llm_processor': LanguageModelProcessor(language, proficiency),
-            'tts_processor': TextToSpeechProcessor(language),
+            'ai_tutor': SimpleAITutor(language, proficiency),
+            'tts': SimpleTTS(language),
             'created_at': time.time()
         }
     return user_sessions[session_id]
 
-# API Routes
+# Health check endpoint
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'Lingo AI Backend',
+        'version': '1.0',
+        'python': '3.13'
+    })
+
+# Chat endpoint
 @app.route('/api/chat', methods=['POST'])
 def chat():
     """Handle chat messages"""
@@ -180,45 +224,38 @@ def chat():
         language = data.get('language', 'English')
         proficiency = data.get('proficiency', 'beginner')
         use_voice = data.get('use_voice', False)
-
+        
         if not user_message:
             return jsonify({'error': 'No message provided'}), 400
-
+        
         if not session_id:
             session_id = str(uuid.uuid4())
-
-        # Get or create user session
+        
+        # Get or create session
         session_data = get_or_create_session(session_id, language, proficiency)
-        llm_processor = session_data['llm_processor']
-        tts_processor = session_data['tts_processor']
-
-        # Get bot response
-        bot_response = llm_processor.process(user_message)
-
+        ai_tutor = session_data['ai_tutor']
+        tts = session_data['tts']
+        
+        # Get AI response
+        bot_response = ai_tutor.get_response(user_message)
+        
         # Generate audio if requested
         audio_data = None
-        if use_voice:
-            audio_data = tts_processor.text_to_speech(bot_response)
-            if audio_data:
-                # Convert to base64 for frontend
-                import base64
-                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-            else:
-                audio_base64 = None
-        else:
-            audio_base64 = None
-
+        if use_voice and tts.api_key:
+            audio_data = tts.text_to_speech(bot_response)
+        
         return jsonify({
             'session_id': session_id,
             'bot_response': bot_response,
-            'audio_data': audio_base64,
+            'audio_data': audio_data,
             'language': language,
             'proficiency': proficiency
         })
-
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Start new session
 @app.route('/api/session/new', methods=['POST'])
 def new_session():
     """Start a new chat session"""
@@ -229,22 +266,27 @@ def new_session():
         
         session_id = str(uuid.uuid4())
         session_data = {
-            'llm_processor': LanguageModelProcessor(language, proficiency),
-            'tts_processor': TextToSpeechProcessor(language),
+            'ai_tutor': SimpleAITutor(language, proficiency),
+            'tts': SimpleTTS(language),
             'created_at': time.time()
         }
         user_sessions[session_id] = session_data
-
+        
+        # Get welcome message
+        welcome_msg = f"Hello! I'm your {language} tutor. I'll help you practice at the {proficiency} level. What would you like to learn today?"
+        
         return jsonify({
             'session_id': session_id,
+            'welcome_message': welcome_msg,
             'language': language,
             'proficiency': proficiency,
             'message': 'New session started'
         })
-
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Reset conversation
 @app.route('/api/session/reset', methods=['POST'])
 def reset_session():
     """Reset conversation for current session"""
@@ -253,28 +295,68 @@ def reset_session():
         session_id = data.get('session_id')
         
         if session_id in user_sessions:
-            user_sessions[session_id]['llm_processor'].reset_conversation()
+            user_sessions[session_id]['ai_tutor'].clear_memory()
             return jsonify({'message': 'Conversation reset successfully'})
         else:
             return jsonify({'error': 'Session not found'}), 404
-
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Get available languages
 @app.route('/api/languages', methods=['GET'])
 def get_languages():
     """Get available languages"""
     return jsonify({
         'languages': [
-            {'code': 'en', 'name': 'English', 'model': 'aura-asteria-en'},
-            {'code': 'es', 'name': 'Spanish', 'model': 'aura-2-estrella-es'}
+            {'code': 'en', 'name': 'English', 'tts_supported': True},
+            {'code': 'es', 'name': 'Spanish', 'tts_supported': True},
+            {'code': 'fr', 'name': 'French', 'tts_supported': True},
+            {'code': 'de', 'name': 'German', 'tts_supported': True},
+            {'code': 'it', 'name': 'Italian', 'tts_supported': False},
+            {'code': 'jp', 'name': 'Japanese', 'tts_supported': False},
+            {'code': 'zh', 'name': 'Chinese', 'tts_supported': False},
+            {'code': 'ko', 'name': 'Korean', 'tts_supported': False}
         ]
     })
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'Lingo AI Backend'})
+# Test endpoint
+@app.route('/api/test', methods=['GET'])
+def test_endpoint():
+    """Test if API is working"""
+    return jsonify({
+        'status': 'working',
+        'message': 'Lingo AI API is running!',
+        'timestamp': time.time()
+    })
+
+# Clean up old sessions (optional background task)
+def cleanup_old_sessions():
+    """Remove sessions older than 2 hours"""
+    current_time = time.time()
+    old_sessions = []
+    
+    for session_id, session_data in user_sessions.items():
+        if current_time - session_data['created_at'] > 7200:  # 2 hours
+            old_sessions.append(session_id)
+    
+    for session_id in old_sessions:
+        del user_sessions[session_id]
+    
+    if old_sessions:
+        print(f"Cleaned up {len(old_sessions)} old sessions")
+
+# Optional: Add a scheduled cleanup (if using a worker process)
+# import threading
+# def schedule_cleanup():
+#     threading.Timer(3600, schedule_cleanup).start()  # Run every hour
+#     cleanup_old_sessions()
+
+# if __name__ == '__main__':
+#     schedule_cleanup()
+#     app.run(debug=True, port=5001)
 
 if __name__ == '__main__':
+    # Run cleanup on startup
+    cleanup_old_sessions()
     app.run(debug=True, port=5001)
