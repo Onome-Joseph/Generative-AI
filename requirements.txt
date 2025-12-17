@@ -7,4 +7,6 @@ requests
 gunicorn
 langchain-groq
 groq
+langchain-memory
+
 
