@@ -4,7 +4,6 @@ services:
     env: python
     region: oregon
     plan: free
-    pythonVersion: "3.9.16"
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
