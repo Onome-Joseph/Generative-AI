@@ -1,18 +1,14 @@
 import os
 import requests
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from langchain_core.prompts import ChatPromptTemplate
+# Updated LangChain imports for newer versions
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferWindowMemory
-from langchain.prompts import (
-    ChatPromptTemplate,
-    MessagesPlaceholder,
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate,
-)
 from langchain.chains import LLMChain
 import uuid
 import time
@@ -23,11 +19,12 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["*"],  # For now, allow all. You can restrict later.
+        "origins": ["*"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
 })
+
 
 # Store user sessions
 user_sessions = {}
@@ -295,4 +292,5 @@ def cleanup_old_sessions():
         del user_sessions[session_id]
 
 if __name__ == '__main__':
+
     app.run(debug=True, port=5001)
