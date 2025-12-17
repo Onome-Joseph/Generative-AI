@@ -1,3 +1,5 @@
+# python-3.9
+
 flask
 flask-cors
 python-dotenv
@@ -8,6 +10,7 @@ langchain-groq
 requests
 gunicorn
 groq
+
 
 
 
