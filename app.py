@@ -4,12 +4,16 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Updated LangChain imports for newer versions
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage, HumanMessage
+# LangChain imports for newer versions
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferWindowMemory
 from langchain.chains import LLMChain
+from langchain.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+    HumanMessagePromptTemplate,
+    SystemMessagePromptTemplate
+)
 import uuid
 import time
 
@@ -25,7 +29,6 @@ CORS(app, resources={
     }
 })
 
-
 # Store user sessions
 user_sessions = {}
 
@@ -39,7 +42,7 @@ class TextToSpeechProcessor:
         self.model = self._select_best_model(target_language)
         
     def _select_best_model(self, language):
-        """Select the best Deepgram model based on language and free tier constraints"""
+        """Select the best Deepgram model based on language"""
         language_models = {
             "English": "aura-asteria-en",
             "Spanish": "aura-2-estrella-es",
@@ -78,8 +81,8 @@ class TextToSpeechProcessor:
         """Clean text for better TTS output"""
         import re
         clean_text = re.sub(r'\[Correction:[^\]]*\]', '', text)
-        clean_text = re.sub(r'\*.*?\*', '', clean_text)
-        clean_text = re.sub(r'_.*?_', '', clean_text)
+        clean_text = re.sub(r'\*.*?\*', '', text)
+        clean_text = re.sub(r'_.*?_', '', text)
         clean_text = ' '.join(clean_text.split())
         
         if len(clean_text) > 500:
@@ -124,6 +127,7 @@ class LanguageModelProcessor:
             proficiency_level=proficiency_level
         )
 
+        # Create prompt template
         self.prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(self.bot_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -140,26 +144,27 @@ class LanguageModelProcessor:
     def process(self, text):
         try:
             start_time = time.time()
-            response = self.conversation.invoke({"text": text})
+            response = self.conversation.predict(text=text)
             processing_time = time.time() - start_time
             
-            if not response['text'].strip():
+            if not response or not response.strip():
                 return "I'd love to help you practice! Could you try rephrasing that?"
                 
-            return response['text']
+            return response.strip()
         except Exception as e:
-            return f"I'm having trouble responding right now. Please try again."
+            print(f"Error in process method: {e}")
+            return "I'm having trouble responding right now. Please try again."
 
     def reset_conversation(self):
         """Reset the conversation memory"""
         self.memory.clear()
 
-def get_or_create_session(session_id):
+def get_or_create_session(session_id, language="English", proficiency="beginner"):
     """Get existing session or create new one"""
     if session_id not in user_sessions:
         user_sessions[session_id] = {
-            'llm_processor': LanguageModelProcessor(),
-            'tts_processor': TextToSpeechProcessor(),
+            'llm_processor': LanguageModelProcessor(language, proficiency),
+            'tts_processor': TextToSpeechProcessor(language),
             'created_at': time.time()
         }
     return user_sessions[session_id]
@@ -183,17 +188,9 @@ def chat():
             session_id = str(uuid.uuid4())
 
         # Get or create user session
-        session_data = get_or_create_session(session_id)
+        session_data = get_or_create_session(session_id, language, proficiency)
         llm_processor = session_data['llm_processor']
         tts_processor = session_data['tts_processor']
-
-        # Update language/proficiency if changed
-        if (language != llm_processor.target_language or 
-            proficiency != llm_processor.proficiency_level):
-            llm_processor = LanguageModelProcessor(language, proficiency)
-            tts_processor = TextToSpeechProcessor(language)
-            session_data['llm_processor'] = llm_processor
-            session_data['tts_processor'] = tts_processor
 
         # Get bot response
         bot_response = llm_processor.process(user_message)
@@ -279,18 +276,5 @@ def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'service': 'Lingo AI Backend'})
 
-# Clean up old sessions (basic implementation)
-def cleanup_old_sessions():
-    """Remove sessions older than 1 hour"""
-    current_time = time.time()
-    expired_sessions = []
-    for session_id, session_data in user_sessions.items():
-        if current_time - session_data['created_at'] > 3600:  # 1 hour
-            expired_sessions.append(session_id)
-    
-    for session_id in expired_sessions:
-        del user_sessions[session_id]
-
 if __name__ == '__main__':
-
     app.run(debug=True, port=5001)
