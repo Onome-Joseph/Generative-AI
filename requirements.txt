@@ -5,6 +5,6 @@ langchain
 langchain-core
 requests
 gunicorn
-
+langchain-groq
 groq
 
