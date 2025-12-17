@@ -1,6 +1,6 @@
 flask
 flask-cors
-python-dotenv=
+python-dotenv
 langchain
 langchain-community
 langchain-core
@@ -8,5 +8,6 @@ langchain-groq
 requests
 gunicorn
 groq
+
 
 
